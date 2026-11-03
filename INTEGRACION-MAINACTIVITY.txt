@@ -1,0 +1,30 @@
+INTEGRACIÓN EN MainActivity.kt
+
+1) Añade un campo:
+   private lateinit var usbSession: UsbAccessorySession
+
+2) En onCreate(), después de construir la interfaz:
+   usbSession = UsbAccessorySession(this) { connected, message ->
+       runOnUiThread {
+           // Actualiza aquí el TextView que muestra el estado de conexión.
+           android.util.Log.i("OrbiUSB", message)
+       }
+   }
+
+3) Añade al Activity:
+   override fun onResume() {
+       super.onResume()
+       if (::usbSession.isInitialized) usbSession.start()
+   }
+
+   override fun onPause() {
+       if (::usbSession.isInitialized) usbSession.stop()
+       super.onPause()
+   }
+
+4) No añadas un intent-filter USB_ACCESSORY_ATTACHED al Manifest por ahora.
+   La detección dinámica queda activa sólo mientras la app está en primer plano.
+
+5) usbSession.fileDescriptor() entrega el descriptor AOA. La siguiente etapa
+   debe implementar lectura/escritura binaria en un hilo de trabajo; nunca leer
+   vídeo en el hilo principal.
