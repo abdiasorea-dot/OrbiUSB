@@ -2,12 +2,18 @@ package com.orbiusb.mobile
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -15,6 +21,7 @@ import android.widget.Spinner
 import android.widget.ArrayAdapter
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 
 class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("orbiusb_settings", Context.MODE_PRIVATE) }
@@ -35,12 +42,115 @@ class MainActivity : Activity() {
     private lateinit var qualityValue: TextView
     private lateinit var qualitySeek: SeekBar
 
+    private lateinit var usbSession: UsbAccessorySession
+    private var link: OrbiLink? = null
+    private val ui = Handler(Looper.getMainLooper())
+    private var connected = false
+    private var statusTitle = "Esperando conexión USB"
+    private var statusDetail = "Conecta la tablet al PC y abre OrbiUSB en el PC."
+    private var lastBitmap: Bitmap? = null
+    private var statusTitleView: TextView? = null
+    private var statusDetailView: TextView? = null
+    private var imageView: ImageView? = null
+    private val poll = object : Runnable {
+        override fun run() {
+            if (::usbSession.isInitialized) usbSession.refresh()
+            ui.postDelayed(this, 1500)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         selectedOrientation = prefs.getString("orientation", "Automática") ?: "Automática"
         selectedQuality = prefs.getInt("quality", 3)
         buildShell()
         showHome()
+        usbSession = UsbAccessorySession(this) { isConnected, message ->
+            runOnUiThread { onUsbState(isConnected, message) }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::usbSession.isInitialized) usbSession.start()
+        ui.postDelayed(poll, 1500)
+    }
+
+    override fun onPause() {
+        ui.removeCallbacks(poll)
+        if (::usbSession.isInitialized) usbSession.stop()
+        super.onPause()
+    }
+
+    private fun deviceInfo(): JSONObject {
+        val dm = resources.displayMetrics
+        return JSONObject()
+            .put("app", "OrbiUSB-Android")
+            .put("version", "0.2.0")
+            .put("protocol", 1)
+            .put("model", Build.MODEL)
+            .put("width", dm.widthPixels)
+            .put("height", dm.heightPixels)
+    }
+
+    private fun onUsbState(isConnected: Boolean, message: String) {
+        if (isConnected) {
+            if (link == null) {
+                val descriptor = usbSession.fileDescriptor() ?: return
+                val newLink = OrbiLink(descriptor, { deviceInfo() }, linkListener)
+                link = newLink
+                setStatus(false, "Canal USB abierto", "Esperando que el PC se identifique…")
+                newLink.start()
+            }
+        } else {
+            link?.close()
+            link = null
+            setStatus(false, "En espera de conexión", message)
+        }
+    }
+
+    private val linkListener = object : OrbiLink.Listener {
+        override fun onHello(peer: JSONObject) {
+            runOnUiThread {
+                setStatus(true, "Conectado al PC", "Identificado: ${peer.optString("app", "OrbiUSB-PC")} ${peer.optString("version", "")}")
+            }
+        }
+
+        override fun onImage(bytes: ByteArray) {
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
+            runOnUiThread {
+                lastBitmap = bitmap
+                imageView?.setImageBitmap(bitmap)
+                imageView?.visibility = View.VISIBLE
+            }
+            try {
+                link?.send(OrbiLink.T_IMAGE_ACK, JSONObject().put("w", bitmap.width).put("h", bitmap.height).toString().toByteArray(Charsets.UTF_8))
+            } catch (_: java.io.IOException) {
+            }
+        }
+
+        override fun onClosed(source: OrbiLink) {
+            runOnUiThread {
+                if (link === source) {
+                    link = null
+                    usbSession.close()
+                    setStatus(false, "Conexión USB cerrada", "Vuelve a conectar la tablet o reinicia OrbiUSB en el PC.")
+                }
+            }
+        }
+    }
+
+    private fun setStatus(ok: Boolean, title: String, detail: String) {
+        connected = ok
+        statusTitle = title
+        statusDetail = detail
+        renderStatus()
+    }
+
+    private fun renderStatus() {
+        statusTitleView?.text = (if (connected) "●   " else "○   ") + statusTitle
+        statusTitleView?.setTextColor(if (connected) green else white)
+        statusDetailView?.text = statusDetail
     }
 
     private fun buildShell() {
@@ -76,13 +186,24 @@ class MainActivity : Activity() {
         content.removeAllViews()
         content.addView(label("ORB I USB", 12f, blue, true))
         content.addView(label("En espera de conexión", 27f, white, true, top = 8))
-        content.addView(label("Conecta el cable USB de tu tablet al PC. OrbiUSB estará listo para detectar la conexión.", 14f, muted, false, top = 8))
+        content.addView(label("Conecta el cable USB de tu tablet al PC y abre OrbiUSB en el PC. Mantén esta app abierta.", 14f, muted, false, top = 8))
 
         val status = card()
         status.addView(label("ESTADO DEL DISPOSITIVO", 11f, muted, true))
-        status.addView(label("○   Esperando conexión USB", 16f, white, true, top = 14))
-        status.addView(label("Cuando el motor de conexión esté integrado, el estado se actualizará automáticamente.", 13f, muted, false, top = 8))
+        statusTitleView = label("", 16f, white, true, top = 14)
+        statusDetailView = label("", 13f, muted, false, top = 8)
+        status.addView(statusTitleView)
+        status.addView(statusDetailView)
+        renderStatus()
         content.addView(status, marginParams(top = 26))
+        imageView = ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(panel2)
+            visibility = if (lastBitmap != null) View.VISIBLE else View.GONE
+            lastBitmap?.let { setImageBitmap(it) }
+        }
+        content.addView(imageView, marginParams(top = 18))
 
         content.addView(label("Configuración actual", 18f, white, true, top = 26))
         val summary = card()
@@ -91,7 +212,7 @@ class MainActivity : Activity() {
         summary.addView(summaryRow("Calidad", qualityLabel(selectedQuality)))
         content.addView(summary, marginParams(top = 12))
         content.addView(actionButton("Configurar pantalla", blue) { showSettings() }, marginParams(top = 18))
-        content.addView(label("Versión inicial · Las preferencias se guardan en este dispositivo. La transmisión de vídeo aún está en desarrollo.", 12f, muted, false, top = 18))
+        content.addView(label("Las preferencias se guardan en este dispositivo. La transmisión de vídeo aún está en desarrollo; por ahora el PC puede enviar una imagen.", 12f, muted, false, top = 18))
     }
 
     private fun showSettings() {
