@@ -18,6 +18,7 @@ modo accessory. La selección MTP es el punto de partida para que el host detect
 y negocie el cambio, no el transporte de vídeo. No todos los Android soportan
 AOA; compatibilidad depende del fabricante, firmware, puerto y cable.
 
-Faltan: negociador Linux con libusb/udev, protocolo de mensajes, streaming H.264,
+Ya están: negociador Linux (OrbiUSB-PC-Starter 0.3.0), protocolo de mensajes e imagen de prueba. Faltan: streaming H.264,
 decodificación MediaCodec, captura/encoder Linux y display virtual para KDE.
 X11 y Wayland requieren backends distintos.
+
