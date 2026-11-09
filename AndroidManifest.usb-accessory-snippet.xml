@@ -1,2 +1,0 @@
-<!-- Añadir dentro de <manifest>, junto a los demás uses-feature. -->
-<uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
