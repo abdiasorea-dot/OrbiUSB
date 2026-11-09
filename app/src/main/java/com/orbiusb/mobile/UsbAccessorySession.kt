@@ -23,16 +23,19 @@ class UsbAccessorySession(
     private val manager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
     private var registered = false
     private var descriptor: ParcelFileDescriptor? = null
+    private var permissionPending = false
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_ACCESSORY_ATTACHED -> inspect()
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
+                    permissionPending = false
                     close()
                     onStateChanged(false, "Dispositivo USB desconectado")
                 }
                 ACTION_PERMISSION -> {
+                    permissionPending = false
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     val accessory = accessoryExtra(intent)
                     if (granted && accessory != null) open(accessory)
@@ -61,8 +64,18 @@ class UsbAccessorySession(
         inspect()
     }
 
+    /**
+     * Llamar periódicamente mientras la Activity está en primer plano.
+     * Android no avisa a una app abierta cuando el PC cambia la tablet a modo accesorio,
+     * así que se vuelve a consultar la lista de accesorios.
+     */
+    fun refresh() {
+        if (registered && descriptor == null && !permissionPending) inspect()
+    }
+
     /** Call from Activity.onPause(). */
     fun stop() {
+        permissionPending = false
         if (registered) {
             try { appContext.unregisterReceiver(receiver) } catch (_: IllegalArgumentException) { }
             registered = false
@@ -72,6 +85,7 @@ class UsbAccessorySession(
     }
 
     private fun inspect() {
+        if (descriptor != null) return
         val accessory = manager.accessoryList?.firstOrNull()
         if (accessory == null) {
             onStateChanged(false, "Esperando conexión USB AOA")
@@ -84,6 +98,7 @@ class UsbAccessorySession(
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
             val permissionIntent = PendingIntent.getBroadcast(appContext, 0, request, flags)
+            permissionPending = true
             manager.requestPermission(accessory, permissionIntent)
             onStateChanged(false, "Solicitando permiso para el accesorio USB")
         }
