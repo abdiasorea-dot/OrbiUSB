@@ -19,3 +19,13 @@ Receptor Android de OrbiUSB por USB sin ADB (Android Open Accessory).
 - `MainActivity`: muestra el estado de la conexión y la última imagen recibida.
 
 Todavía no hay vídeo: el PC puede enviar una imagen de prueba. Ver `LINUX-HOST-REQUIREMENTS.md`.
+
+# OrbiUSB — app Android (0.2.1)
+
+Receptor Android de OrbiUSB por USB sin ADB (Android Open Accessory).
+
+- `UsbAccessorySession`: detecta y abre el accesorio AOA mientras la app está en primer plano (sondea cada 1,5 s porque Android no avisa a una app abierta).
+- `OrbiLink`: protocolo con el PC (HELLO/HELLO_ACK, PING/PONG, IMAGE/IMAGE_ACK) en un hilo propio.
+- `MainActivity`: muestra el estado de la conexión y la última imagen recibida.
+
+Todavía no hay vídeo: el PC puede enviar una imagen de prueba. Ver `LINUX-HOST-REQUIREMENTS.md`.
