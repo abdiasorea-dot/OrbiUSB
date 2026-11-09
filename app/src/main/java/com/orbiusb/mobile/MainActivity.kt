@@ -70,6 +70,12 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (::usbSession.isInitialized) usbSession.refresh()
+    }
+
     override fun onResume() {
         super.onResume()
         if (::usbSession.isInitialized) usbSession.start()
@@ -86,7 +92,7 @@ class MainActivity : Activity() {
         val dm = resources.displayMetrics
         return JSONObject()
             .put("app", "OrbiUSB-Android")
-            .put("version", "0.2.0")
+            .put("version", "0.2.1")
             .put("protocol", 1)
             .put("model", Build.MODEL)
             .put("width", dm.widthPixels)
