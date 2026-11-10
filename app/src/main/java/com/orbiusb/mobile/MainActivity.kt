@@ -12,6 +12,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -49,6 +50,9 @@ class MainActivity : Activity() {
     private var statusTitle = "Esperando conexión USB"
     private var statusDetail = "Conecta la tablet al PC y abre OrbiUSB en el PC."
     private var lastBitmap: Bitmap? = null
+    private var shellRoot: View? = null
+    private var mirrorView: ImageView? = null
+    private var mirrorOn = false
     private var statusTitleView: TextView? = null
     private var statusDetailView: TextView? = null
     private var imageView: ImageView? = null
@@ -92,7 +96,7 @@ class MainActivity : Activity() {
         val dm = resources.displayMetrics
         return JSONObject()
             .put("app", "OrbiUSB-Android")
-            .put("version", "0.2.1")
+            .put("version", "0.3.0")
             .put("protocol", 1)
             .put("model", Build.MODEL)
             .put("width", dm.widthPixels)
@@ -109,6 +113,7 @@ class MainActivity : Activity() {
                 newLink.start()
             }
         } else {
+            setMirror(false)
             link?.close()
             link = null
             setStatus(false, "En espera de conexión", message)
@@ -122,12 +127,20 @@ class MainActivity : Activity() {
             }
         }
 
+        override fun onMirror(on: Boolean) {
+            runOnUiThread { setMirror(on) }
+        }
+
         override fun onImage(bytes: ByteArray) {
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
             runOnUiThread {
-                lastBitmap = bitmap
-                imageView?.setImageBitmap(bitmap)
-                imageView?.visibility = View.VISIBLE
+                if (mirrorOn) {
+                    mirrorView?.setImageBitmap(bitmap)
+                } else {
+                    lastBitmap = bitmap
+                    imageView?.setImageBitmap(bitmap)
+                    imageView?.visibility = View.VISIBLE
+                }
             }
             try {
                 link?.send(OrbiLink.T_IMAGE_ACK, JSONObject().put("w", bitmap.width).put("h", bitmap.height).toString().toByteArray(Charsets.UTF_8))
@@ -139,11 +152,55 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (link === source) {
                     link = null
+                    setMirror(false)
                     usbSession.close()
                     setStatus(false, "Conexión USB cerrada", "Vuelve a conectar la tablet o reinicia OrbiUSB en el PC.")
                 }
             }
         }
+    }
+
+    /** Pantalla completa para el duplicado; al salir se restaura la interfaz normal. */
+    private fun setMirror(on: Boolean) {
+        if (on == mirrorOn) return
+        mirrorOn = on
+        if (on) {
+            val view = ImageView(this).apply {
+                setBackgroundColor(0xFF000000.toInt())
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }
+            mirrorView = view
+            setContentView(view)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        } else {
+            mirrorView = null
+            shellRoot?.let { setContentView(it) }
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (mirrorOn) {
+            setMirror(false)
+            val current = link
+            Thread {
+                try {
+                    current?.send(OrbiLink.T_MIRROR, JSONObject().put("on", false).toString().toByteArray(Charsets.UTF_8))
+                } catch (_: java.io.IOException) {
+                }
+            }.start()
+            return
+        }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 
     private fun setStatus(ok: Boolean, title: String, detail: String) {
@@ -183,6 +240,7 @@ class MainActivity : Activity() {
         nav.addView(navHome, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(8) })
         nav.addView(navSettings, LinearLayout.LayoutParams(0, dp(48), 1f))
         root.addView(nav)
+        shellRoot = root
         setContentView(root)
     }
 
