@@ -20,6 +20,7 @@ class OrbiLink(
     interface Listener {
         fun onHello(peer: JSONObject)
         fun onImage(bytes: ByteArray)
+        fun onMirror(on: Boolean)
         fun onClosed(source: OrbiLink)
     }
 
@@ -30,6 +31,7 @@ class OrbiLink(
         const val T_IMAGE_ACK = 4
         const val T_PING = 5
         const val T_PONG = 6
+        const val T_MIRROR = 7
         private const val HEADER = 9
         private const val MAX_PAYLOAD = 16 * 1024 * 1024
         // Siempre se lee con un búfer de 16 KB: si fuera menor, el controlador AOA descarta el resto del paquete.
@@ -109,6 +111,10 @@ class OrbiLink(
             }
             T_PING -> send(T_PONG)
             T_IMAGE -> listener.onImage(payload)
+            T_MIRROR -> {
+                val flags = try { JSONObject(String(payload, Charsets.UTF_8)) } catch (_: Exception) { JSONObject() }
+                listener.onMirror(flags.optBoolean("on", false))
+            }
         }
     }
 }
