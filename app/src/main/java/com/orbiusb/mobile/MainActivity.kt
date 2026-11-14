@@ -14,6 +14,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.graphics.Bitmap.Config
+import android.media.MediaCodecList
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import android.widget.FrameLayout
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -54,6 +59,12 @@ class MainActivity : Activity() {
     private var shellRoot: View? = null
     private var mirrorView: ImageView? = null
     private var mirrorOn = false
+    private var mirrorContainer: FrameLayout? = null
+    private var videoSurface: SurfaceView? = null
+    private var player: VideoPlayer? = null
+    private var mirrorCodec = "jpeg"
+    private var videoW = 0
+    private var videoH = 0
     private var scaleIndex = 0
     private val scaleModes = listOf(
         ImageView.ScaleType.FIT_CENTER to "Ajustar",
@@ -106,13 +117,22 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    private fun hasH264Decoder(): Boolean = try {
+        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+            !info.isEncoder && info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) }
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     private fun deviceInfo(): JSONObject {
         val dm = resources.displayMetrics
         return JSONObject()
             .put("app", "OrbiUSB-Android")
-            .put("version", "0.3.1")
+            .put("version", "0.4.0")
             .put("protocol", 1)
             .put("model", Build.MODEL)
+            .put("h264", hasH264Decoder())
             .put("width", dm.widthPixels)
             .put("height", dm.heightPixels)
     }
@@ -141,8 +161,17 @@ class MainActivity : Activity() {
             }
         }
 
-        override fun onMirror(on: Boolean) {
-            runOnUiThread { setMirror(on) }
+        override fun onMirror(on: Boolean, codec: String) {
+            runOnUiThread { setMirror(on, codec) }
+        }
+
+        override fun onVideo(payload: ByteArray) {
+            // Se confirma al recibir para que el PC pueda seguir enviando mientras se decodifica.
+            try {
+                link?.send(OrbiLink.T_IMAGE_ACK)
+            } catch (_: java.io.IOException) {
+            }
+            player?.submit(payload)
         }
 
         override fun onImage(bytes: ByteArray) {
@@ -220,45 +249,142 @@ class MainActivity : Activity() {
         return bitmap
     }
 
-    private fun cycleScale(view: ImageView) {
+    private fun cycleScale() {
         scaleIndex = (scaleIndex + 1) % scaleModes.size
-        view.scaleType = scaleModes[scaleIndex].first
+        mirrorView?.scaleType = scaleModes[scaleIndex].first
+        layoutVideo()
         Toast.makeText(this, scaleModes[scaleIndex].second, Toast.LENGTH_SHORT).show()
     }
 
     override fun onDestroy() {
+        stopPlayer()
         decoderRunning = false
         synchronized(decodeLock) { decodeLock.notifyAll() }
         super.onDestroy()
     }
 
-    /** Pantalla completa para el duplicado; al salir se restaura la interfaz normal. */
-    private fun setMirror(on: Boolean) {
-        if (on == mirrorOn) return
-        mirrorOn = on
-        if (on) {
-            val view = ImageView(this).apply {
-                setBackgroundColor(0xFF000000.toInt())
-                scaleType = scaleModes[scaleIndex].first
-                setOnClickListener { cycleScale(this) }  // toque: Ajustar / Rellenar / Estirar
-            }
-            mirrorView = view
-            setContentView(view)
+    /** Pantalla completa para el duplicado (JPEG en un ImageView o H.264 en un SurfaceView); al salir se restaura la interfaz. */
+    private fun setMirror(on: Boolean, codec: String = "jpeg") {
+        if (!on) {
+            if (!mirrorOn) return
+            mirrorOn = false
+            stopPlayer()
+            mirrorView = null
+            videoSurface = null
+            mirrorContainer = null
+            shellRoot?.let { setContentView(it) }
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+            return
+        }
+        if (!mirrorOn) {
+            mirrorOn = true
+            val container = FrameLayout(this)
+            container.setBackgroundColor(0xFF000000.toInt())
+            val image = ImageView(this)
+            image.setBackgroundColor(0xFF000000.toInt())
+            image.scaleType = scaleModes[scaleIndex].first
+            val surfaceView = SurfaceView(this)
+            container.addView(image, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            container.addView(surfaceView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
+            container.setOnClickListener { cycleScale() } // toque: Ajustar / Rellenar / Estirar
+            container.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutVideo() }
+            surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    if (mirrorCodec == "h264") startPlayer(holder.surface)
+                }
+
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    stopPlayer()
+                }
+            })
+            mirrorContainer = container
+            mirrorView = image
+            videoSurface = surfaceView
+            setContentView(container)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             val params = window.attributes
             params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             window.attributes = params
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        }
+        mirrorCodec = codec
+        applyCodec()
+    }
+
+    private fun applyCodec() {
+        val image = mirrorView ?: return
+        val surfaceView = videoSurface ?: return
+        if (mirrorCodec == "h264") {
+            image.visibility = View.GONE
+            surfaceView.visibility = View.VISIBLE
+            val surface = surfaceView.holder.surface
+            if (surface != null && surface.isValid) startPlayer(surface)
         } else {
-            mirrorView = null
-            shellRoot?.let { setContentView(it) }
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+            stopPlayer()
+            surfaceView.visibility = View.GONE
+            image.visibility = View.VISIBLE
+        }
+    }
+
+    private fun startPlayer(surface: Surface) {
+        if (player != null) return
+        videoW = 0
+        videoH = 0
+        val newPlayer = VideoPlayer(
+            surface,
+            { w, h -> runOnUiThread { videoW = w; videoH = h; layoutVideo() } },
+            { reason -> onVideoFailure(reason) }
+        )
+        player = newPlayer
+        newPlayer.start()
+    }
+
+    private fun stopPlayer() {
+        player?.stop()
+        player = null
+    }
+
+    /** El decodificador H.264 de esta tablet falló: se pide al PC que pase a JPEG. */
+    private fun onVideoFailure(reason: String) {
+        try {
+            link?.send(
+                OrbiLink.T_MIRROR,
+                JSONObject().put("on", true).put("fallback", "jpeg").put("reason", reason).toString().toByteArray(Charsets.UTF_8)
+            )
+        } catch (_: java.io.IOException) {
+        }
+    }
+
+    /** El SurfaceView se redimensiona a mano para respetar Ajustar / Rellenar / Estirar. */
+    private fun layoutVideo() {
+        val container = mirrorContainer ?: return
+        val view = videoSurface ?: return
+        val cw = container.width
+        val ch = container.height
+        if (cw == 0 || ch == 0 || videoW == 0 || videoH == 0) return
+        val sx = cw.toFloat() / videoW
+        val sy = ch.toFloat() / videoH
+        val w: Int
+        val h: Int
+        when (scaleIndex) {
+            1 -> { val s = maxOf(sx, sy); w = (videoW * s).toInt(); h = (videoH * s).toInt() }
+            2 -> { w = cw; h = ch }
+            else -> { val s = minOf(sx, sy); w = (videoW * s).toInt(); h = (videoH * s).toInt() }
+        }
+        val params = view.layoutParams as FrameLayout.LayoutParams
+        if (params.width != w || params.height != h) {
+            params.width = w
+            params.height = h
+            params.gravity = Gravity.CENTER
+            view.layoutParams = params
         }
     }
 
