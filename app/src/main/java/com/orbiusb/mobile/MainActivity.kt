@@ -13,6 +13,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.graphics.Bitmap.Config
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -53,6 +54,19 @@ class MainActivity : Activity() {
     private var shellRoot: View? = null
     private var mirrorView: ImageView? = null
     private var mirrorOn = false
+    private var scaleIndex = 0
+    private val scaleModes = listOf(
+        ImageView.ScaleType.FIT_CENTER to "Ajustar",
+        ImageView.ScaleType.CENTER_CROP to "Rellenar (recorta)",
+        ImageView.ScaleType.FIT_XY to "Estirar"
+    )
+    // Decodificación en un hilo aparte: solo se conserva el fotograma más reciente.
+    private val decodeLock = Object()
+    private var pendingFrame: ByteArray? = null
+    private var decoder: Thread? = null
+    @Volatile private var decoderRunning = false
+    private val reuse = arrayOfNulls<Bitmap>(2)
+    private var reuseIndex = 0
     private var statusTitleView: TextView? = null
     private var statusDetailView: TextView? = null
     private var imageView: ImageView? = null
@@ -96,7 +110,7 @@ class MainActivity : Activity() {
         val dm = resources.displayMetrics
         return JSONObject()
             .put("app", "OrbiUSB-Android")
-            .put("version", "0.3.0")
+            .put("version", "0.3.1")
             .put("protocol", 1)
             .put("model", Build.MODEL)
             .put("width", dm.widthPixels)
@@ -132,20 +146,12 @@ class MainActivity : Activity() {
         }
 
         override fun onImage(bytes: ByteArray) {
-            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
-            runOnUiThread {
-                if (mirrorOn) {
-                    mirrorView?.setImageBitmap(bitmap)
-                } else {
-                    lastBitmap = bitmap
-                    imageView?.setImageBitmap(bitmap)
-                    imageView?.visibility = View.VISIBLE
-                }
-            }
+            // Se confirma al recibir (no al decodificar) para que el PC pueda enviar el siguiente fotograma mientras tanto.
             try {
-                link?.send(OrbiLink.T_IMAGE_ACK, JSONObject().put("w", bitmap.width).put("h", bitmap.height).toString().toByteArray(Charsets.UTF_8))
+                link?.send(OrbiLink.T_IMAGE_ACK, JSONObject().put("bytes", bytes.size).toString().toByteArray(Charsets.UTF_8))
             } catch (_: java.io.IOException) {
             }
+            submitFrame(bytes)
         }
 
         override fun onClosed(source: OrbiLink) {
@@ -160,6 +166,72 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun submitFrame(bytes: ByteArray) {
+        synchronized(decodeLock) {
+            pendingFrame = bytes
+            if (decoder == null) {
+                decoderRunning = true
+                decoder = Thread({ decodeLoop() }, "orbiusb-decoder").also { it.start() }
+            }
+            decodeLock.notifyAll()
+        }
+    }
+
+    private fun decodeLoop() {
+        while (decoderRunning) {
+            val frame: ByteArray? = synchronized(decodeLock) {
+                while (pendingFrame == null && decoderRunning) decodeLock.wait()
+                val next = pendingFrame
+                pendingFrame = null
+                next
+            }
+            if (frame == null) continue
+            val reuseBuffers = mirrorOn
+            val bitmap = decodeFrame(frame, reuseBuffers) ?: continue
+            runOnUiThread {
+                if (mirrorOn) {
+                    mirrorView?.setImageBitmap(bitmap)
+                } else {
+                    lastBitmap = bitmap
+                    imageView?.setImageBitmap(bitmap)
+                    imageView?.visibility = View.VISIBLE
+                }
+            }
+        }
+    }
+
+    /** Durante el duplicado se reutilizan dos bitmaps para no generar basura en cada fotograma. */
+    private fun decodeFrame(bytes: ByteArray, reuseBuffers: Boolean): Bitmap? {
+        val options = BitmapFactory.Options()
+        if (!reuseBuffers) return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        options.inMutable = true
+        options.inPreferredConfig = Config.ARGB_8888
+        options.inBitmap = reuse[reuseIndex]
+        val bitmap = try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        } catch (_: IllegalArgumentException) {
+            options.inBitmap = null
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        }
+        if (bitmap != null) {
+            reuse[reuseIndex] = bitmap
+            reuseIndex = 1 - reuseIndex
+        }
+        return bitmap
+    }
+
+    private fun cycleScale(view: ImageView) {
+        scaleIndex = (scaleIndex + 1) % scaleModes.size
+        view.scaleType = scaleModes[scaleIndex].first
+        Toast.makeText(this, scaleModes[scaleIndex].second, Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onDestroy() {
+        decoderRunning = false
+        synchronized(decodeLock) { decodeLock.notifyAll() }
+        super.onDestroy()
+    }
+
     /** Pantalla completa para el duplicado; al salir se restaura la interfaz normal. */
     private fun setMirror(on: Boolean) {
         if (on == mirrorOn) return
@@ -167,10 +239,14 @@ class MainActivity : Activity() {
         if (on) {
             val view = ImageView(this).apply {
                 setBackgroundColor(0xFF000000.toInt())
-                scaleType = ImageView.ScaleType.FIT_CENTER
+                scaleType = scaleModes[scaleIndex].first
+                setOnClickListener { cycleScale(this) }  // toque: Ajustar / Rellenar / Estirar
             }
             mirrorView = view
             setContentView(view)
+            val params = window.attributes
+            params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = params
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
