@@ -51,3 +51,20 @@ jobs:
     files: app/build/outputs/apk/debug/app-debug.apk
     overwrite_files: true
     make_latest: true
+
+    - name: Actualizar información de descarga
+  run: |
+    DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+    cat > latest-build.md <<EOF
+    ## 📱 Última versión de OrbiUSB
+
+    - **Compilación:** #${{ github.run_number }}
+    - **Fecha:** ${DATE}
+    - **Estado:** Compilación exitosa
+
+    ### Descargar
+
+    [⬇️ DESCARGAR ÚLTIMO APK](https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk)
+    EOF
+
+    python -c "from pathlib import Path; p=Path('README.md'); s=p.read_text(); a='<!-- LATEST_BUILD_START -->'; b='<!-- LATEST_BUILD_END -->'; n=Path('latest-build.md').read_text(); p.write_text(s.split(a)[0]+a+'\n'+n+'\n'+b+s.split(b)[1])"
