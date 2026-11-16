@@ -1,3 +1,6 @@
+<!-- LATEST_BUILD_START -->
+<!-- LATEST_BUILD_END -->
+
 # OrbiUSB — etapa inicial USB sin ADB
 
 Incluye una clase Android para detectar/abrir un accesorio AOA sólo mientras la
