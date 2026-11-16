@@ -1,34 +1,4 @@
-name: Build OrbiUSB APK
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Descargar repositorio
-        uses: actions/checkout@v4
-
-      - name: Configurar Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Configurar Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+gradle-version: '8.9'
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v4
@@ -39,32 +9,73 @@ jobs:
       - name: Compilar APK Debug
         run: gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Publicar última versión APK
-  uses: softprops/action-gh-release@v2
-  with:
-    tag_name: latest
-    name: Última compilación de OrbiUSB
-    body: |
-      Última compilación automática de OrbiUSB.
-      Build: ${{ github.run_number }}
-      Commit: ${{ github.sha }}
-    files: app/build/outputs/apk/debug/app-debug.apk
-    overwrite_files: true
-    make_latest: true
+      # Conserva el artefacto descargable desde la página de cada ejecución.
+      - name: Guardar APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbiUSB-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
 
-    - name: Actualizar información de descarga
-  run: |
-    DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
-    cat > latest-build.md <<EOF
-    ## 📱 Última versión de OrbiUSB
+      # Las Pull Requests solo compilan y validan; no publican Releases.
+      - name: Publicar APK en GitHub Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: OrbiUSB Debug #${{ github.run_number }}
+          body: |
+            Compilación automática de OrbiUSB.
 
-    - **Compilación:** #${{ github.run_number }}
-    - **Fecha:** ${DATE}
-    - **Estado:** Compilación exitosa
+            - Build: #${{ github.run_number }}
+            - Commit: ${{ github.sha }}
+            - Rama: ${{ github.ref_name }}
+          files: app/build/outputs/apk/debug/app-debug.apk
+          make_latest: true
 
-    ### Descargar
+      # Actualiza la sección delimitada en README.md, o la añade si no existe.
+      - name: Actualizar enlace de descarga en README
+        if: github.event_name != 'pull_request'
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
 
-    [⬇️ DESCARGAR ÚLTIMO APK](https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk)
-    EOF
+          readme = Path("README.md")
+          text = readme.read_text(encoding="utf-8") if readme.exists() else ""
 
-    python -c "from pathlib import Path; p=Path('README.md'); s=p.read_text(); a='<!-- LATEST_BUILD_START -->'; b='<!-- LATEST_BUILD_END -->'; n=Path('latest-build.md').read_text(); p.write_text(s.split(a)[0]+a+'\n'+n+'\n'+b+s.split(b)[1])"
+          start = "<!-- ORBIUSB_LATEST_BUILD_START -->"
+          end = "<!-- ORBIUSB_LATEST_BUILD_END -->"
+
+          build = os.environ["BUILD_NUMBER"]
+          commit = os.environ["COMMIT_SHA"][:7]
+          branch = os.environ["BRANCH_NAME"]
+          repo = os.environ["REPOSITORY"]
+          date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+          apk_url = f"https://github.com/{repo}/releases/latest/download/app-debug.apk"
+
+          section = (
+              "## 📱 Última compilación de OrbiUSB\n\n"
+              f"- **APK:** [Descargar última compilación]({apk_url})\n"
+              f"- **Build:** #{build}\n"
+              f"- **Fecha:** {date}\n"
+              f"- **Rama:** `{branch}`\n"
+              f"- **Commit:** `{commit}`\n"
+              "- **Estado:** Compilación y publicación exitosas\n"
+          )
+
+          if start in text and end in text:
+              before, remainder = text.split(start, 1)
+              _, after = remainder.split(end, 1)
+              updated = before + start + "\n" + section + end + after
+          else:
+              updated = text.rstrip()
+              if updated:
+                  updated += "\n\n"
